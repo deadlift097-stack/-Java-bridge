@@ -19,7 +19,7 @@ Jars must be dexed with d8; Android can't load plain class-file jars.
 
 ## Features
 - Events: tick (20/s), app.resumed/app.paused, custom events, native `fire()` (docs/EVENTS.md)
-- In-game "Mods" button: toggle Java mods on/off and read the log (state is saved)
+- In-game "Mods" button: toggle Java mods on/off, change each mod's settings, read the log (all saved)
 - Fabric-style jars (`ModInitializer`) load without rewriting; `convert-mods` workflow prepares them (docs/COMPAT.md)
 
 ## Status
