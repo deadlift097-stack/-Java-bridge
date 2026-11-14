@@ -11,7 +11,9 @@ import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.EditText;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.util.List;
@@ -115,17 +117,16 @@ final class MenuUi {
         return p;
     }
 
-    private static void refresh(Activity a) {
+    private static void refresh(final Activity a) {
         if (list == null) return;
         list.removeAllViews();
         List<Bootstrap.Entry> mods = Bootstrap.list();
-        if (mods.isEmpty()) {
-            TextView none = new TextView(a);
-            none.setText("No Java mods loaded");
-            none.setTextColor(0xFFAAAAAA);
-            list.addView(none);
-        }
+        if (mods.isEmpty()) list.addView(label(a, "No Java mods loaded", 0xFFAAAAAA));
         for (final Bootstrap.Entry e : mods) {
+            LinearLayout row = new LinearLayout(a);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+
             CheckBox cb = new CheckBox(a);
             cb.setText(e.id + (e.fabric ? "  (Fabric-style)" : ""));
             cb.setTextColor(Color.WHITE);
@@ -136,10 +137,92 @@ final class MenuUi {
                     refreshLog();
                 }
             });
-            list.addView(cb);
+            row.addView(cb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            if (!e.ctx.config.options().isEmpty()) {
+                Button gear = new Button(a);
+                gear.setText("Settings");
+                gear.setAllCaps(false);
+                gear.setTextSize(11);
+                gear.setOnClickListener(new View.OnClickListener() {
+                    public void onClick(View v) { showSettings(a, e); }
+                });
+                row.addView(gear);
+            }
+            list.addView(row);
         }
         refreshLog();
     }
+
+    private static void showSettings(final Activity a, final Bootstrap.Entry e) {
+        if (list == null) return;
+        list.removeAllViews();
+        list.addView(label(a, e.id + " settings", Color.WHITE));
+        final ModConfig cfg = e.ctx.config;
+        for (final ModConfig.Option o : cfg.options()) {
+            if (o.type == ModConfig.TOGGLE) {
+                CheckBox cb = new CheckBox(a);
+                cb.setText(o.label);
+                cb.setTextColor(Color.WHITE);
+                cb.setChecked(cfg.getBoolean(o.key));
+                cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                    public void onCheckedChanged(CompoundButton b, boolean on) { cfg.set(o.key, String.valueOf(on)); refreshLog(); }
+                });
+                list.addView(cb);
+            } else if (o.type == ModConfig.NUMBER) {
+                final TextView val = label(a, o.label + ": " + fmt(cfg.getDouble(o.key)), Color.WHITE);
+                list.addView(val);
+                SeekBar sb = new SeekBar(a);
+                sb.setMax(1000);
+                sb.setProgress((int) Math.round((cfg.getDouble(o.key) - o.min) / (o.max - o.min) * 1000));
+                sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    public void onProgressChanged(SeekBar s, int p, boolean user) {
+                        val.setText(o.label + ": " + fmt(o.min + (o.max - o.min) * p / 1000.0));
+                    }
+                    public void onStartTrackingTouch(SeekBar s) {}
+                    public void onStopTrackingTouch(SeekBar s) {
+                        cfg.set(o.key, String.valueOf(o.min + (o.max - o.min) * s.getProgress() / 1000.0));
+                        refreshLog();
+                    }
+                });
+                list.addView(sb);
+            } else {
+                list.addView(label(a, o.label, Color.WHITE));
+                LinearLayout row = new LinearLayout(a);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                final EditText et = new EditText(a);
+                et.setText(cfg.getString(o.key));
+                et.setTextColor(Color.WHITE);
+                et.setSingleLine(true);
+                row.addView(et, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                Button set = new Button(a);
+                set.setText("Set");
+                set.setAllCaps(false);
+                set.setOnClickListener(new View.OnClickListener() {
+                    public void onClick(View v) { cfg.set(o.key, et.getText().toString()); refreshLog(); }
+                });
+                row.addView(set);
+                list.addView(row);
+            }
+        }
+        Button back = new Button(a);
+        back.setText("Back");
+        back.setAllCaps(false);
+        back.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { refresh(a); }
+        });
+        list.addView(back);
+        refreshLog();
+    }
+
+    private static TextView label(Activity a, String text, int color) {
+        TextView t = new TextView(a);
+        t.setText(text);
+        t.setTextColor(color);
+        return t;
+    }
+
+    private static String fmt(double v) { return String.format(java.util.Locale.US, "%.1f", v); }
 
     private static void refreshLog() {
         if (logView == null) return;

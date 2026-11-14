@@ -26,9 +26,12 @@ public final class Bootstrap {
         final String id;
         final ModHostMod mod;
         final boolean fabric;
+        final ModContext ctx;
         boolean enabled; // user preference (persisted)
         boolean active;  // onEnable has run
-        Entry(String id, ModHostMod mod, boolean fabric) { this.id = id; this.mod = mod; this.fabric = fabric; }
+        Entry(String id, ModHostMod mod, boolean fabric, ModContext ctx) {
+            this.id = id; this.mod = mod; this.fabric = fabric; this.ctx = ctx;
+        }
     }
 
     private static final List<Entry> MODS = new ArrayList<Entry>();
@@ -134,8 +137,9 @@ public final class Bootstrap {
             boolean isFabric = false;
             if (mod == null && !fabric.isEmpty()) { mod = new FabricAdapter(fabric); isFabric = true; }
             if (mod == null) return;
-            mod.onLoad(new ModContext(id, data.getAbsolutePath()));
-            Entry e = new Entry(id, mod, isFabric);
+            ModContext ctx = new ModContext(id, data.getAbsolutePath());
+            mod.onLoad(ctx);
+            Entry e = new Entry(id, mod, isFabric, ctx);
             e.enabled = !DISABLED.contains(id);
             MODS.add(e);
             LOG.info("loaded " + id + (isFabric ? " (Fabric-style entrypoints)" : ""));
