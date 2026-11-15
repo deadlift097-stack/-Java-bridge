@@ -1,10 +1,11 @@
 # Running Java mods without rewriting them
 
-What works: a normal jar whose Fabric entrypoints (`ModInitializer` / `ClientModInitializer`) use only
-plain Java and Android-compatible libraries. Convert it with the `convert-mods` workflow (it dexes the jar and
-writes the `.json` from `fabric.mod.json`), then copy both files to `<dataDir>/mods`.
+1. Put the `.jar` in `mods-in/` in your repo, run the **convert-mods** workflow, download `converted-mods`.
+2. Copy the `.jar` + `.json` pairs into `<dataDir>/mods` and restart the game.
+3. Open the in-game **Mods** button. Each mod shows a gear icon, a status line, and a switch.
 
-What cannot work: mods that touch Minecraft Java Edition classes (`net.minecraft.*`, Mixins, Fabric API
-events). Bedrock has none of those classes and a different code base, so there is nothing to run them against.
-Such mods load, then log "needs Minecraft Java Edition classes" and are skipped. BetterHitreg is in this group.
-The converter's REPORT.txt tells you per jar which case you have.
+Fabric entrypoints and NeoForge `@Mod` classes are both detected (see API_COMPAT.md for what is supported).
+Mods that need Minecraft Java Edition game code (Mixins, `net.minecraft.*` classes) cannot work on Bedrock:
+they appear as "Java Edition only" and stay off. Sodium, Lithium, Sodium Extra, BetterHitreg and similar
+mods change how the Java engine renders, ticks or registers hits, and Bedrock has its own engine, so there
+is nothing for them to change. REPORT.txt in the converted-mods artifact tells you which case each jar is.
