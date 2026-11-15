@@ -19,10 +19,13 @@ Jars must be dexed with d8; Android can't load plain class-file jars.
 
 ## Features
 - Events: tick (20/s), app.resumed/app.paused, custom events, native `fire()` (docs/EVENTS.md)
-- In-game "Mods" button: toggle Java mods on/off, change each mod's settings, read the log (all saved)
-- Fabric-style jars (`ModInitializer`) load without rewriting; `convert-mods` workflow prepares them (docs/COMPAT.md)
+- In-game "Mods" button: switch mods on/off, see why a mod can't run, and open a gear editor per mod:
+  status, settings, and a text editor for its config files (docs/CONFIG.md)
+- Fabric-style and NeoForge-style APIs: `ModInitializer`, `FabricLoader`, `Event`, `ClientTickEvents`,
+  `@Mod` + `IEventBus`, slf4j (docs/API_COMPAT.md)
+- `convert-mods` workflow prepares ordinary jars (docs/COMPAT.md)
 
 ## Status
-- Done: JVM bridge, API, events, menu, Fabric-style loader, converter, CI.
+- Done: JVM bridge, API, events, menu + gear editor, Fabric/NeoForge-style layer, converter, CI.
 - Not done: native game-event hooks (need Bedrock signatures per version), Lua loader.
 - Untested on a device or inside the real template; expect small fixes.
