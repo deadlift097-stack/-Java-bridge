@@ -18,20 +18,24 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Entry points called from C++. A mod is <name>.jar (dexed) + <name>.json with either
- * {"id","main"} (ModHostMod) or {"id","entrypoints":[...]} (Fabric-style ModInitializer classes).
+ * Entry points called from C++. A mod is <name>.jar (dexed) + <name>.json:
+ *   {"id","main"}                 ModHost mod (ModHostMod)
+ *   {"id","entrypoints":[...]}    Fabric-style (ModInitializer / ClientModInitializer)
+ *   {"id","neoforge":[...]}       NeoForge-style (@Mod classes)
+ * Optional "name" and "version" are shown in the menu.
  */
 public final class Bootstrap {
+    static final int OK = 0, INCOMPATIBLE = 1, ERROR = 2;
+
     static final class Entry {
         final String id;
-        final ModHostMod mod;
-        final boolean fabric;
-        final ModContext ctx;
+        String name, version = "", kind = "ModHost", reason = "";
+        ModHostMod mod;
+        ModContext ctx;
+        int status = OK;
         boolean enabled; // user preference (persisted)
         boolean active;  // onEnable has run
-        Entry(String id, ModHostMod mod, boolean fabric, ModContext ctx) {
-            this.id = id; this.mod = mod; this.fabric = fabric; this.ctx = ctx;
-        }
+        Entry(String id) { this.id = id; this.name = id; }
     }
 
     private static final List<Entry> MODS = new ArrayList<Entry>();
@@ -39,9 +43,21 @@ public final class Bootstrap {
     private static final ModLogger LOG = new ModLogger("ModHost");
     private static final Pattern MAIN = Pattern.compile("\"main\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern ID = Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern VERSION = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern ENTRIES = Pattern.compile("\"entrypoints\"\\s*:\\s*\\[([^\\]]*)\\]");
+    private static final Pattern NEO = Pattern.compile("\"neoforge\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]+)\"");
+    private static final Pattern RESOLUTION = Pattern.compile("Failed resolution of: L([^;]+);");
+    private static final Pattern NOT_FOUND = Pattern.compile("Didn't find class \"([^\"]+)\"");
+    private static final Pattern CNF = Pattern.compile("ClassNotFoundException: ([\\w.$]+)");
+    private static final String[] JAVA_EDITION = {
+        "net/minecraft/", "com/mojang/", "org/spongepowered/", "net/fabricmc/fabric/", "net/fabricmc/loader/impl/",
+        "net/fabricmc/mapping", "net/neoforged/", "net/minecraftforge/", "org/lwjgl/", "io/netty/",
+        "it/unimi/", "com/google/common/"
+    };
     private static File disabledFile;
+    private static String dataRootPath = "";
     private static boolean running;
 
     private Bootstrap() {}
@@ -49,6 +65,7 @@ public final class Bootstrap {
     // ---------------- called from C++ ----------------
 
     public static void loadMods(String modsDir, String dataRoot) {
+        dataRootPath = dataRoot;
         new File(dataRoot).mkdirs();
         disabledFile = new File(dataRoot, "disabled.txt");
         readDisabled();
@@ -60,15 +77,17 @@ public final class Bootstrap {
             try {
                 loadOne(meta, dataRoot);
             } catch (Throwable t) {
-                LOG.error("failed to load " + meta.getName() + ": " + explain(t));
+                LOG.error("failed to read " + meta.getName() + ": " + explain(t));
             }
         }
-        LOG.info(MODS.size() + " Java mod(s) loaded");
+        int ok = 0;
+        for (Entry e : MODS) if (e.status == OK) ok++;
+        LOG.info(ok + " of " + MODS.size() + " Java mod(s) loaded");
     }
 
     public static void enableAll() {
         running = true;
-        for (Entry e : MODS) if (e.enabled) callEnable(e);
+        for (Entry e : MODS) if (e.enabled && e.status == OK) callEnable(e);
         Platform.start();
     }
 
@@ -86,6 +105,7 @@ public final class Bootstrap {
     // ---------------- used by the menu / event bus ----------------
 
     static List<Entry> list() { return MODS; }
+    static String dataRoot() { return dataRootPath; }
 
     static boolean isActive(String owner) {
         if ("core".equals(owner)) return true;
@@ -95,7 +115,7 @@ public final class Bootstrap {
 
     static void setEnabled(String id, boolean on) {
         for (Entry e : MODS) {
-            if (!e.id.equals(id)) continue;
+            if (!e.id.equals(id) || e.status != OK) continue;
             e.enabled = on;
             if (on) DISABLED.remove(id); else DISABLED.add(id);
             writeDisabled();
@@ -104,47 +124,69 @@ public final class Bootstrap {
         }
     }
 
+    /** A mod's handler or lifecycle method threw: mark the mod, say why once, stop calling it. */
+    static void failOwner(String owner, Throwable t) {
+        for (Entry e : MODS) {
+            if (e.id.equals(owner)) {
+                if (e.status == OK) fail(e, t);
+                return;
+            }
+        }
+        Events.reportOnce("owner." + owner + "." + t.getClass().getName(), owner + ": " + explain(t));
+    }
+
     // ---------------- internals ----------------
 
     private static void loadOne(File meta, String dataRoot) throws Exception {
         String json = read(meta);
-        Matcher im = ID.matcher(json);
-        String id = im.find() ? im.group(1) : meta.getName().replace(".json", "");
+        Entry e = new Entry(group(ID, json, meta.getName().replace(".json", "")));
+        e.name = group(NAME, json, e.id);
+        e.version = group(VERSION, json, "");
 
-        List<String> classes = new ArrayList<String>();
+        List<String> mains = new ArrayList<String>();
         Matcher mm = MAIN.matcher(json);
-        if (mm.find()) classes.add(mm.group(1));
-        Matcher em = ENTRIES.matcher(json);
-        if (em.find()) {
-            Matcher q = QUOTED.matcher(em.group(1));
-            while (q.find()) classes.add(q.group(1));
-        }
-        if (classes.isEmpty()) { LOG.warn(meta.getName() + ": needs \"main\" or \"entrypoints\""); return; }
+        if (mm.find()) mains.add(mm.group(1));
+        mains.addAll(quoted(ENTRIES, json));
+        List<String> neoClasses = quoted(NEO, json);
 
-        File data = new File(dataRoot, id);
+        File data = new File(dataRoot, e.id);
         data.mkdirs();
-        ModHostMod mod = null;
-        List<Object> fabric = new ArrayList<Object>();
-        Events.owner = id;
+        e.ctx = new ModContext(e.id, data.getAbsolutePath());
+        e.enabled = !DISABLED.contains(e.id);
+        MODS.add(e);
+
+        Events.owner = e.id;
         try {
-            for (String cn : classes) {
+            ModHostMod mod = null;
+            List<Object> fabric = new ArrayList<Object>();
+            List<ModHostMod> neo = new ArrayList<ModHostMod>();
+            for (String cn : mains) {
                 Object o = Class.forName(cn, true, Bootstrap.class.getClassLoader())
                         .getDeclaredConstructor().newInstance();
                 if (o instanceof ModHostMod) { if (mod == null) mod = (ModHostMod) o; }
                 else if (o instanceof ModInitializer || o instanceof ClientModInitializer) fabric.add(o);
-                else LOG.warn(id + ": " + cn + " is not a supported entrypoint");
+                else LOG.warn(e.id + ": " + cn + " is not a supported entrypoint");
             }
-            boolean isFabric = false;
-            if (mod == null && !fabric.isEmpty()) { mod = new FabricAdapter(fabric); isFabric = true; }
-            if (mod == null) return;
-            ModContext ctx = new ModContext(id, data.getAbsolutePath());
-            mod.onLoad(ctx);
-            Entry e = new Entry(id, mod, isFabric, ctx);
-            e.enabled = !DISABLED.contains(id);
-            MODS.add(e);
-            LOG.info("loaded " + id + (isFabric ? " (Fabric-style entrypoints)" : ""));
+            for (String cn : neoClasses) {
+                ModHostMod m = NeoSupport.create(e.id, cn);
+                if (m != null) neo.add(m);
+            }
+            if (mod == null && (!fabric.isEmpty() || !neo.isEmpty())) {
+                mod = new Composite(fabric, neo);
+                e.kind = !fabric.isEmpty() && !neo.isEmpty() ? "Fabric + NeoForge style"
+                        : !fabric.isEmpty() ? "Fabric-style" : "NeoForge-style";
+            }
+            if (mod == null) {
+                e.status = ERROR;
+                e.reason = "no supported entrypoint in " + meta.getName();
+                LOG.warn(e.id + ": " + e.reason);
+                return;
+            }
+            e.mod = mod;
+            mod.onLoad(e.ctx);
+            LOG.info("loaded " + e.id + " (" + e.kind + ")");
         } catch (Throwable t) {
-            LOG.error(id + ": " + explain(t));
+            fail(e, t);
         } finally {
             Events.owner = "core";
         }
@@ -154,7 +196,7 @@ public final class Bootstrap {
         e.active = true;
         Events.owner = e.id;
         try { e.mod.onEnable(); }
-        catch (Throwable t) { e.active = false; LOG.error(e.id + ": " + explain(t)); }
+        catch (Throwable t) { fail(e, t); }
         finally { Events.owner = "core"; }
     }
 
@@ -165,20 +207,61 @@ public final class Bootstrap {
         finally { Events.owner = "core"; e.active = false; }
     }
 
-    static String explain(Throwable t) {
-        String s = String.valueOf(t);
-        if (s.contains("net/minecraft") || s.contains("net.minecraft") || s.contains("com/mojang")) {
-            return "needs Minecraft Java Edition classes, which don't exist on Bedrock, so this mod can't run unchanged (" + s + ")";
+    private static void fail(Entry e, Throwable t) {
+        String cls = missingClass(t);
+        if (cls != null && isJavaEdition(cls)) {
+            e.status = INCOMPATIBLE;
+            e.reason = "Java Edition only (needs " + cls.replace('/', '.') + ")";
+        } else if (cls != null) {
+            e.status = ERROR;
+            e.reason = "missing library " + cls.replace('/', '.');
+        } else {
+            e.status = ERROR;
+            e.reason = rootMessage(t);
         }
-        if (t instanceof NoClassDefFoundError || t instanceof ClassNotFoundException) return "missing class: " + s;
-        return s;
+        e.active = false;
+        LOG.warn(e.id + ": " + e.reason);
     }
 
-    private static final class FabricAdapter implements ModHostMod {
+    private static boolean isJavaEdition(String cls) {
+        for (String p : JAVA_EDITION) if (cls.startsWith(p)) return true;
+        return false;
+    }
+
+    /** Name (slash form) of the class that could not be found, or null if the error is something else. */
+    private static String missingClass(Throwable t) {
+        for (Throwable x = t; x != null; x = x.getCause() == x ? null : x.getCause()) {
+            String s = String.valueOf(x);
+            Matcher m = RESOLUTION.matcher(s);
+            if (m.find()) return m.group(1);
+            m = NOT_FOUND.matcher(s);
+            if (m.find()) return m.group(1).replace('.', '/');
+            m = CNF.matcher(s);
+            if (m.find()) return m.group(1).replace('.', '/');
+        }
+        return null;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable r = t;
+        while (r.getCause() != null && r.getCause() != r) r = r.getCause();
+        return String.valueOf(r);
+    }
+
+    static String explain(Throwable t) {
+        String cls = missingClass(t);
+        if (cls != null && isJavaEdition(cls)) return "Java Edition only (needs " + cls.replace('/', '.') + ")";
+        if (cls != null) return "missing library " + cls.replace('/', '.');
+        return rootMessage(t);
+    }
+
+    /** Runs Fabric-style initializers and NeoForge-style mods behind one ModHostMod. */
+    private static final class Composite implements ModHostMod {
         private final List<Object> inits;
+        private final List<ModHostMod> others;
         private boolean done;
-        FabricAdapter(List<Object> inits) { this.inits = inits; }
-        public void onLoad(ModContext ctx) {}
+        Composite(List<Object> inits, List<ModHostMod> others) { this.inits = inits; this.others = others; }
+        public void onLoad(ModContext ctx) { for (ModHostMod m : others) m.onLoad(ctx); }
         public void onEnable() {
             if (done) return;
             done = true;
@@ -186,8 +269,24 @@ public final class Bootstrap {
                 if (o instanceof ModInitializer) ((ModInitializer) o).onInitialize();
                 if (o instanceof ClientModInitializer) ((ClientModInitializer) o).onInitializeClient();
             }
+            for (ModHostMod m : others) m.onEnable();
         }
-        public void onDisable() {}
+        public void onDisable() { for (ModHostMod m : others) m.onDisable(); }
+    }
+
+    private static String group(Pattern p, String s, String fallback) {
+        Matcher m = p.matcher(s);
+        return m.find() ? m.group(1) : fallback;
+    }
+
+    private static List<String> quoted(Pattern arrayPattern, String json) {
+        List<String> out = new ArrayList<String>();
+        Matcher a = arrayPattern.matcher(json);
+        if (a.find()) {
+            Matcher q = QUOTED.matcher(a.group(1));
+            while (q.find()) out.add(q.group(1));
+        }
+        return out;
     }
 
     private static void readDisabled() {

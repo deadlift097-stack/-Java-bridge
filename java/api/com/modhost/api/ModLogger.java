@@ -15,6 +15,7 @@ public final class ModLogger {
     public void info(String m)  { emit(INFO, m); }
     public void warn(String m)  { emit(WARN, m); }
     public void error(String m) { emit(ERROR, m); }
+    public void log(int level, String m) { emit(level, m); }
 
     /** Last n log lines (used by the in-game menu). */
     public static List<String> recent(int n) {

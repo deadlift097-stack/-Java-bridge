@@ -41,6 +41,10 @@ final class Platform {
         });
     }
 
+    static void post(Runnable r, long delayMs) {
+        if (delayMs <= 0) MAIN.post(r); else MAIN.postDelayed(r, delayMs);
+    }
+
     // Timer on the Android UI thread; it is not Minecraft's internal tick.
     private static final Runnable TICK = new Runnable() {
         public void run() {
@@ -73,6 +77,7 @@ final class Platform {
         public void onActivityResumed(Activity a) {
             MenuUi.attach(a);
             Events.post("app.resumed", a.getClass().getName());
+            Compat.appResumed();
         }
         public void onActivityPaused(Activity a) { Events.post("app.paused", a.getClass().getName()); }
         public void onActivityCreated(Activity a, Bundle b) {}

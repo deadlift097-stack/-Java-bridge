@@ -2,6 +2,7 @@ package com.modhost.api;
 
 import android.app.Activity;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -9,17 +10,30 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
-/** Small "Mods" button + panel drawn over the game: toggle Java mods and read the log. */
+/**
+ * "Mods" button + panel drawn over the game. List page: toggle mods, see why one can't run, open the
+ * gear editor. Editor page: status, settings, config files (text editor).
+ */
 final class MenuUi {
+    private static final String GEAR = "\u2699";
+    private static final String[] TEXT_EXT = { ".json", ".json5", ".properties", ".toml", ".txt", ".cfg", ".conf", ".yml", ".yaml" };
+
     private static Activity host;
     private static Button button;
     private static LinearLayout panel, list;
@@ -51,8 +65,9 @@ final class MenuUi {
 
                 panel = buildPanel(a);
                 panel.setVisibility(View.GONE);
+                int maxH = (int) (a.getResources().getDisplayMetrics().heightPixels * 0.9f);
                 a.addContentView(panel, new FrameLayout.LayoutParams(
-                        dp(a, 320), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+                        dp(a, 360), Math.min(dp(a, 440), maxH), Gravity.CENTER));
             }
         });
     }
@@ -92,20 +107,15 @@ final class MenuUi {
         list = new LinearLayout(a);
         list.setOrientation(LinearLayout.VERTICAL);
         modsScroll.addView(list);
-        p.addView(modsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(a, 150)));
+        p.addView(modsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f));
 
-        TextView logTitle = new TextView(a);
-        logTitle.setText("Log");
-        logTitle.setTextColor(0xFFAAAAAA);
-        logTitle.setTextSize(12);
-        p.addView(logTitle);
-
+        p.addView(label(a, "Log", 0xFFAAAAAA));
         ScrollView logScroll = new ScrollView(a);
         logView = new TextView(a);
         logView.setTextColor(0xFFCCCCCC);
         logView.setTextSize(10);
         logScroll.addView(logView);
-        p.addView(logScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(a, 110)));
+        p.addView(logScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         Button close = new Button(a);
         close.setText("Close");
@@ -116,6 +126,8 @@ final class MenuUi {
         p.addView(close);
         return p;
     }
+
+    // ---------------- list page ----------------
 
     private static void refresh(final Activity a) {
         if (list == null) return;
@@ -128,9 +140,10 @@ final class MenuUi {
             row.setGravity(Gravity.CENTER_VERTICAL);
 
             CheckBox cb = new CheckBox(a);
-            cb.setText(e.id + (e.fabric ? "  (Fabric-style)" : ""));
-            cb.setTextColor(Color.WHITE);
-            cb.setChecked(e.enabled);
+            cb.setText(e.name + (e.version.length() > 0 ? "  v" + e.version : ""));
+            cb.setTextColor(e.status == Bootstrap.OK ? Color.WHITE : 0xFF888888);
+            cb.setChecked(e.enabled && e.status == Bootstrap.OK);
+            cb.setEnabled(e.status == Bootstrap.OK);
             cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 public void onCheckedChanged(CompoundButton b, boolean on) {
                     Bootstrap.setEnabled(e.id, on);
@@ -139,26 +152,99 @@ final class MenuUi {
             });
             row.addView(cb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            if (!e.ctx.config.options().isEmpty()) {
-                Button gear = new Button(a);
-                gear.setText("Settings");
-                gear.setAllCaps(false);
-                gear.setTextSize(11);
-                gear.setOnClickListener(new View.OnClickListener() {
-                    public void onClick(View v) { showSettings(a, e); }
-                });
-                row.addView(gear);
-            }
+            Button gear = new Button(a);
+            gear.setText(GEAR);
+            gear.setTextSize(18);
+            gear.setAllCaps(false);
+            gear.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) { showEditor(a, e); }
+            });
+            row.addView(gear, new LinearLayout.LayoutParams(dp(a, 52), ViewGroup.LayoutParams.WRAP_CONTENT));
             list.addView(row);
+
+            if (e.status != Bootstrap.OK) {
+                TextView why = label(a, e.reason, statusColor(e));
+                why.setTextSize(11);
+                why.setPadding(dp(a, 32), 0, 0, dp(a, 4));
+                list.addView(why);
+            }
         }
         refreshLog();
     }
 
-    private static void showSettings(final Activity a, final Bootstrap.Entry e) {
+    // ---------------- gear editor page ----------------
+
+    private static void showEditor(final Activity a, final Bootstrap.Entry e) {
         if (list == null) return;
         list.removeAllViews();
-        list.addView(label(a, e.id + " settings", Color.WHITE));
-        final ModConfig cfg = e.ctx.config;
+        list.addView(label(a, GEAR + "  " + e.name + (e.version.length() > 0 ? "  v" + e.version : ""), Color.WHITE));
+
+        TextView info = label(a, "id: " + e.id + "   type: " + e.kind, 0xFFAAAAAA);
+        info.setTextSize(11);
+        list.addView(info);
+        TextView status = label(a, statusText(e), statusColor(e));
+        status.setTextSize(12);
+        list.addView(status);
+        if (e.status == Bootstrap.INCOMPATIBLE) {
+            TextView note = label(a, "This mod was written for Minecraft Java Edition and calls game code that "
+                    + "Bedrock does not have. It stays off.", 0xFFAAAAAA);
+            note.setTextSize(11);
+            list.addView(note);
+        }
+
+        if (e.status == Bootstrap.OK) {
+            CheckBox on = new CheckBox(a);
+            on.setText("Enabled");
+            on.setTextColor(Color.WHITE);
+            on.setChecked(e.enabled);
+            on.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(CompoundButton b, boolean v) { Bootstrap.setEnabled(e.id, v); refreshLog(); }
+            });
+            list.addView(on);
+        }
+
+        // declared settings
+        if (e.ctx != null && !e.ctx.config.options().isEmpty()) {
+            list.addView(label(a, "Settings", 0xFFAAAAAA));
+            addOptions(a, e.ctx.config);
+        }
+
+        // config files the mod (or its Fabric config dir) wrote
+        list.addView(label(a, "Config files", 0xFFAAAAAA));
+        List<File> files = configFiles(e);
+        if (files.isEmpty()) {
+            TextView none = label(a, "None yet. Mods create these the first time they save settings.", 0xFF888888);
+            none.setTextSize(11);
+            list.addView(none);
+        }
+        for (final File f : files) {
+            Button b = new Button(a);
+            b.setText(f.getName());
+            b.setAllCaps(false);
+            b.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) { showFile(a, e, f); }
+            });
+            list.addView(b);
+        }
+
+        if (e.ctx != null) {
+            TextView path = label(a, "Folder: " + e.ctx.dataDir, 0xFF888888);
+            path.setTextSize(10);
+            path.setTextIsSelectable(true);
+            list.addView(path);
+        }
+
+        Button back = new Button(a);
+        back.setText("Back");
+        back.setAllCaps(false);
+        back.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { refresh(a); }
+        });
+        list.addView(back);
+        refreshLog();
+    }
+
+    private static void addOptions(final Activity a, final ModConfig cfg) {
         for (final ModConfig.Option o : cfg.options()) {
             if (o.type == ModConfig.TOGGLE) {
                 CheckBox cb = new CheckBox(a);
@@ -205,14 +291,104 @@ final class MenuUi {
                 list.addView(row);
             }
         }
+    }
+
+    private static void showFile(final Activity a, final Bootstrap.Entry e, final File f) {
+        if (list == null) return;
+        list.removeAllViews();
+        list.addView(label(a, f.getName(), Color.WHITE));
+        if (f.length() > 65536) {
+            list.addView(label(a, "File is larger than 64 KB; edit it with a file manager.", 0xFFFFAA33));
+        } else {
+            final EditText et = new EditText(a);
+            et.setText(readText(f));
+            et.setTextColor(Color.WHITE);
+            et.setTypeface(Typeface.MONOSPACE);
+            et.setTextSize(11);
+            et.setGravity(Gravity.TOP | Gravity.START);
+            et.setMinLines(8);
+            list.addView(et);
+
+            Button save = new Button(a);
+            save.setText("Save");
+            save.setAllCaps(false);
+            save.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) {
+                    boolean ok = writeText(f, et.getText().toString());
+                    new ModLogger("ModHost").info((ok ? "saved " : "could not save ") + f.getName());
+                    if (ok) Events.post("config.file.changed", f.getAbsolutePath());
+                    refreshLog();
+                }
+            });
+            list.addView(save);
+        }
         Button back = new Button(a);
         back.setText("Back");
         back.setAllCaps(false);
         back.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { refresh(a); }
+            public void onClick(View v) { showEditor(a, e); }
         });
         list.addView(back);
         refreshLog();
+    }
+
+    // ---------------- helpers ----------------
+
+    private static List<File> configFiles(Bootstrap.Entry e) {
+        List<File> out = new ArrayList<File>();
+        if (e.ctx != null) collect(new File(e.ctx.dataDir), null, out);
+        collect(new File(Bootstrap.dataRoot(), "config"), e.id.toLowerCase(Locale.US), out);
+        return out;
+    }
+
+    private static void collect(File dir, String nameMustContain, List<File> out) {
+        File[] fs = dir.listFiles();
+        if (fs == null) return;
+        Arrays.sort(fs);
+        for (File f : fs) {
+            if (!f.isFile()) continue;
+            String n = f.getName().toLowerCase(Locale.US);
+            if (nameMustContain != null && !n.contains(nameMustContain)) continue;
+            for (String ext : TEXT_EXT) if (n.endsWith(ext)) { out.add(f); break; }
+        }
+    }
+
+    private static String readText(File f) {
+        try {
+            FileInputStream in = new FileInputStream(f);
+            try {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                return out.toString("UTF-8");
+            } finally { in.close(); }
+        } catch (Throwable t) { return ""; }
+    }
+
+    private static boolean writeText(File f, String text) {
+        try {
+            FileOutputStream out = new FileOutputStream(f);
+            try { out.write(text.getBytes("UTF-8")); } finally { out.close(); }
+            return true;
+        } catch (Throwable t) { return false; }
+    }
+
+    private static String statusText(Bootstrap.Entry e) {
+        if (e.status == Bootstrap.OK) return e.active ? "Running" : "Loaded, off";
+        return e.reason;
+    }
+
+    private static int statusColor(Bootstrap.Entry e) {
+        if (e.status == Bootstrap.OK) return 0xFF77DD77;
+        return e.status == Bootstrap.INCOMPATIBLE ? 0xFFFFAA33 : 0xFFFF6666;
+    }
+
+    private static void refreshLog() {
+        if (logView == null) return;
+        StringBuilder sb = new StringBuilder();
+        for (String l : ModLogger.recent(14)) sb.append(l).append('\n');
+        logView.setText(sb.toString());
     }
 
     private static TextView label(Activity a, String text, int color) {
@@ -222,14 +398,7 @@ final class MenuUi {
         return t;
     }
 
-    private static String fmt(double v) { return String.format(java.util.Locale.US, "%.1f", v); }
-
-    private static void refreshLog() {
-        if (logView == null) return;
-        StringBuilder sb = new StringBuilder();
-        for (String l : ModLogger.recent(14)) sb.append(l).append('\n');
-        logView.setText(sb.toString());
-    }
+    private static String fmt(double v) { return String.format(Locale.US, "%.1f", v); }
 
     private static int dp(Activity a, float v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, a.getResources().getDisplayMetrics());
